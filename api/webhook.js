@@ -1,11 +1,14 @@
-// api/webhook.js — FitManager Bot con Redis (Upstash)
-// Sincroniza agua, comidas completadas y extras entre Telegram y la app
+// api/webhook.js — FitManager Bot
+// Telegram bot con Redis (Upstash) y Gemini AI para frases motivadoras
 
-const BOT_TOKEN = "8756822686:AAGjXdOfzNq7ROroGXL9my0JnrTnu3-3Jks";
-const CHAT_ID   = "1080470754";
-const REDIS_URL = process.env.REDIS_URL;
+const BOT_TOKEN  = "8756822686:AAGjXdOfzNq7ROroGXL9my0JnrTnu3-3Jks";
+const CHAT_ID    = "1080470754";
+const REDIS_URL  = process.env.REDIS_URL;
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
-// ── REDIS via HTTP (Upstash REST API) ────────────────────────────────────────
+// =============================================================================
+// REDIS (Upstash REST API)
+// =============================================================================
 const redis = async (...args) => {
   const res  = await fetch(REDIS_URL, {
     method:  "POST",
@@ -16,15 +19,90 @@ const redis = async (...args) => {
   return data.result;
 };
 
-const rGet = async (key)         => { const v = await redis("GET", key); try { return v ? JSON.parse(v) : null; } catch { return v; } };
-const rSet = (key, value)        => redis("SET", key, JSON.stringify(value));
-const rDel = (key)               => redis("DEL", key);
-const rIncrBy = (key, amount)    => redis("INCRBY", key, amount);
+const rGet = async (key) => {
+  const v = await redis("GET", key);
+  try { return v ? JSON.parse(v) : null; } catch { return v; }
+};
+const rSet = (key, value) => redis("SET", key, JSON.stringify(value));
+const rDel = (key)        => redis("DEL", key);
 
 // Clave del día actual en Redis (ej: "fm:2026-4-13")
-const dk = () => { const d = new Date(); return `fm:${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+const dk = () => {
+  const d = new Date();
+  return `fm:${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+};
 
-// ── DATOS DE LA DIETA ─────────────────────────────────────────────────────────
+// =============================================================================
+// GEMINI AI — Frases motivadoras y pasajes bíblicos
+// =============================================================================
+const getMotivationalMsg = async (today, dayKey) => {
+  // Contexto del día para personalizar el mensaje
+  const waterMl  = (await rGet(`${dayKey}:water`))   || 0;
+  const checked  = (await rGet(`${dayKey}:checked`)) || {};
+  const meals    = DIET[today] || {};
+  const doneCnt  = Object.keys(checked).length;
+  const totalCnt = Object.keys(meals).length;
+
+  // Alterna aleatoriamente entre frase motivadora y pasaje bíblico
+  const tipo = Math.random() > 0.5 ? "motivacional" : "biblico";
+
+  const prompt = tipo === "biblico"
+    ? `Elige UN pasaje bíblico real y exacto en español relacionado con fortaleza, perseverancia, cuerpo como templo de Dios, o esperanza. 
+Contexto: Joaquín lleva ${waterMl}ml de agua hoy (objetivo 3000ml) y ha completado ${doneCnt} de ${totalCnt} comidas de su plan dietético.
+
+Responde SOLO con este formato exacto (sin explicaciones extra):
+📖 «[versículo completo]»
+— [Libro Capítulo:Versículo]
+[Una frase corta conectando el pasaje con su situación de salud hoy]`
+
+    : `Genera UNA frase motivadora corta y personalizada para Joaquín.
+Contexto: lleva ${waterMl}ml de agua hoy (objetivo 3000ml) y ha completado ${doneCnt} de ${totalCnt} comidas de su plan dietético. Su objetivo es reducir grasa corporal.
+La frase debe ser específica a su situación, enérgica y directa. Con 1 emoji al inicio. Máximo 2 frases.
+Responde SOLO con la frase, sin comillas ni explicaciones.`;
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+      {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 150, temperature: 0.9 },
+        }),
+      }
+    );
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+      || getFallback(tipo);
+  } catch {
+    return getFallback(tipo);
+  }
+};
+
+// Fallbacks por si falla Gemini
+const getFallback = (tipo) => {
+  const motivacional = [
+    "💪 La constancia supera al talento. Llevas días construyendo algo grande, Joaquín.",
+    "🔥 Tu cuerpo es el resultado de lo que haces hoy. ¡Hazlo bien!",
+    "🎯 No se trata de ser perfecto, se trata de no rendirse. ¡Sigue adelante!",
+    "⚡ Cada comida del plan es un paso hacia tu mejor versión.",
+    "🏆 Los que llegan lejos no son los más rápidos, sino los que no paran.",
+  ];
+  const biblico = [
+    "📖 «Todo lo puedo en Cristo que me fortalece.»\n— Filipenses 4:13\nHoy tienes esa fuerza. Úsala.",
+    "📖 «¿No saben que su cuerpo es templo del Espíritu Santo?»\n— 1 Corintios 6:19\nCuídalo con cada comida de hoy.",
+    "📖 «No nos cansemos de hacer el bien, porque a su debido tiempo cosecharemos.»\n— Gálatas 6:9\nLos resultados llegan. No pares.",
+    "📖 «El Señor es mi fortaleza y mi escudo; en él confió mi corazón.»\n— Salmos 28:7\nCon esa fortaleza, completa el plan de hoy.",
+    "📖 «Esfuérzate y sé valiente. No temas ni te acobardes.»\n— Josué 1:9\nEse valor también se aplica a cuidar tu salud.",
+  ];
+  const arr = tipo === "biblico" ? biblico : motivacional;
+  return arr[Math.floor(Math.random() * arr.length)];
+};
+
+// =============================================================================
+// DATOS DE LA DIETA
+// =============================================================================
 const DAYS    = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
 const jsToMon = (j) => (j === 0 ? 6 : j - 1);
 const getToday    = () => DAYS[jsToMon(new Date().getDay())];
@@ -40,69 +118,14 @@ const DIET = {
   Domingo:   { Comida: { foods:"Merluza con salteado de gulas y puerro",             calories:430, schedule:"14:00", ingredients:"Merluza: 350g, Gulas: 100g, Puerro: 75g, Ajo: 10g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Ensalada de tomate, cebolla, pimiento verde y atún", calories:280, schedule:"23:00", ingredients:"Tomate: 200g, Cebolla: 125g, Pimiento verde: 125g, Atún: 110g" } },
 };
 
-// Genera una frase motivacional personalizada usando Claude AI
-const getMotivationalMsg = async () => {
-  try {
-    const today   = getToday();
-    const meals   = DIET[today] || {};
-    const dayKey  = dk();
-    const waterMl = (await rGet(`${dayKey}:water`)) || 0;
-    const checked = (await rGet(`${dayKey}:checked`)) || {};
-    const doneCnt = Object.keys(checked).length;
-    const totalCnt = Object.keys(meals).length;
-
-    const context = `Hoy es ${today}. Joaquín lleva ${waterMl}ml de agua bebidos (objetivo 3000ml) y ha completado ${doneCnt} de ${totalCnt} comidas del plan dietético. Su objetivo es reducir grasa corporal.`;
-
-    const tipo = Math.random() > 0.5 ? "motivacional" : "bíblico";
-
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 200,
-        messages: [{
-          role: "user",
-          content: tipo === "bíblico"
-            ? `Eres un coach de nutrición cristiano. Contexto de Joaquín hoy: ${context}.
-
-Elige UN pasaje bíblico real y exacto que conecte con su situación (salud, perseverancia, cuerpo como templo, fuerza, esperanza). 
-
-Formato de respuesta:
-📖 [Versículo completo en español]
-— [Libro Capítulo:Versículo]
-
-Luego añade UNA frase corta conectando el pasaje con su objetivo de salud hoy.
-Máximo 3 líneas. Solo devuelve el mensaje, sin explicaciones.`
-
-            : `Eres un coach de nutrición motivador. Contexto de Joaquín hoy: ${context}.
-
-Genera UNA frase motivacional corta, específica a su situación actual (agua bebida, comidas completadas, objetivo de reducir grasa). 
-No uses frases genéricas. Que sea directa, enérgica y personal.
-Con 1 emoji al inicio. Máximo 2 frases.
-Solo devuelve la frase, sin explicaciones ni comillas.`,
-        }],
-      }),
-    });
-
-    const data = await res.json();
-    return data.content?.[0]?.text || "💪 Todo lo puedo en Cristo que me fortalece. — Filipenses 4:13";
-  } catch {
-    return "📖 «El Señor es mi fortaleza y mi escudo.» — Salmos 28:7\nHoy cuida tu cuerpo como el templo que es. ¡Tú puedes, Joaquín!";
-  }
-};
-
-// ── HELPERS ───────────────────────────────────────────────────────────────────
-
+// =============================================================================
+// HELPERS
+// =============================================================================
 const sendMsg = async (text) => {
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: CHAT_ID, parse_mode: "Markdown", text }),
+    body:    JSON.stringify({ chat_id: CHAT_ID, parse_mode: "Markdown", text }),
   });
 };
 
@@ -129,8 +152,9 @@ const formatDayDiet = (day) => {
   return msg;
 };
 
-// ── PROCESADOR DE COMANDOS ────────────────────────────────────────────────────
-
+// =============================================================================
+// PROCESADOR DE COMANDOS
+// =============================================================================
 const processCommand = async (text) => {
   const raw      = (text || "").trim();
   const lower    = raw.toLowerCase();
@@ -141,13 +165,13 @@ const processCommand = async (text) => {
   const tomorrow = getTomorrow();
   const dayKey   = dk();
 
-  // ── /dieta ──────────────────────────────────────────────────────────────────
+  // /dieta
   if (command === "/dieta") return formatDayDiet(today);
 
-  // ── /manana ─────────────────────────────────────────────────────────────────
+  // /manana
   if (command === "/manana" || command === "/mañana") return formatDayDiet(tomorrow);
 
-  // ── /semana ─────────────────────────────────────────────────────────────────
+  // /semana
   if (command === "/semana") {
     let msg = `🗓 *Plan semanal completo*\n${"─".repeat(26)}\n\n`;
     DAYS.forEach(day => {
@@ -160,14 +184,14 @@ const processCommand = async (text) => {
     return msg;
   }
 
-  // ── /comida ─────────────────────────────────────────────────────────────────
+  // /comida
   if (command === "/comida") {
     const next = getNextMeal(today);
     if (!next) return `🌙 Ya terminaste todas las comidas de hoy. ¡Buen trabajo, Joaquín! 🎉\n\nMañana: *${Object.values(DIET[tomorrow]||{})[0]?.foods || "ver el plan"}*`;
     return `🍽️ *Próxima comida: ${next.name}*\n\n🕐 A las *${next.schedule}*\n🥗 ${next.foods}\n📝 _${next.ingredients}_\n⚡ ${next.calories} kcal`;
   }
 
-  // ── /calorias ────────────────────────────────────────────────────────────────
+  // /calorias
   if (command === "/calorias") {
     const meals = DIET[today] || {};
     const total = Object.values(meals).reduce((s, m) => s + m.calories, 0);
@@ -177,15 +201,15 @@ const processCommand = async (text) => {
     return msg;
   }
 
-  // ── /agua (consulta) ─────────────────────────────────────────────────────────
+  // /agua — consulta con barra de progreso
   if (command === "/agua" && args.length === 0) {
     const waterMl = (await rGet(`${dayKey}:water`)) || 0;
-    const pct     = Math.round((waterMl / 3000) * 100);
+    const pct     = Math.min(100, Math.round((waterMl / 3000) * 100));
     const bar     = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
     return `💧 *Agua de hoy*\n\n${bar} ${pct}%\n*${waterMl} ml* de 3.000 ml\n\nPara añadir:\n/agua+ 200\n/agua+ 250\n/agua+ 500\n/agua+ 750\n\nPara reiniciar: /agua0`;
   }
 
-  // ── /agua+ [ml] — SUMA en Redis y se refleja en la app ───────────────────────
+  // /agua+ [ml] — suma en Redis, se refleja en la app
   if (command === "/agua+") {
     const ml = parseInt(args[0]);
     if (!ml || ml <= 0 || ml > 5000) return `❌ Cantidad no válida.\nEjemplo: /agua+ 500`;
@@ -194,16 +218,16 @@ const processCommand = async (text) => {
     await rSet(`${dayKey}:water`, newVal);
     const pct = Math.min(100, Math.round((newVal / 3000) * 100));
     const bar = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
-    return `💧 *+${ml}ml añadidos* ✓\n\n${bar} ${pct}%\n*${newVal} ml* de 3.000 ml\n\n${newVal >= 3000 ? "🎉 ¡Objetivo de 3L alcanzado!" : `Faltan ${3000 - newVal} ml para el objetivo`}`;
+    return `💧 *+${ml}ml añadidos* ✓\n\n${bar} ${pct}%\n*${newVal} ml* de 3.000 ml\n\n${newVal >= 3000 ? "🎉 ¡Objetivo de 3L alcanzado!" : `Faltan *${3000 - newVal} ml* para el objetivo`}`;
   }
 
-  // ── /agua0 — reinicia el agua del día ───────────────────────────────────────
+  // /agua0 — reinicia agua del día
   if (command === "/agua0") {
     await rDel(`${dayKey}:water`);
     return `💧 Agua del día reiniciada a 0 ml ✓`;
   }
 
-  // ── /extra [nombre] [kcal] — guarda en Redis ─────────────────────────────────
+  // /extra [nombre] [kcal] — guarda en Redis
   if (command === "/extra") {
     if (args.length < 1) return `❌ Formato: /extra nombre kcal\n\nEjemplos:\n• /extra cafe 5\n• /extra platano 105`;
     const kcal    = parseInt(args[args.length - 1]);
@@ -217,7 +241,7 @@ const processCommand = async (text) => {
     return `➕ *Extra añadido* ✓\n\n🍽️ *${name}*${hasKcal ? `\n⚡ ${kcal} kcal` : ""}\n\n📊 Total extras hoy: *${totalExtra} kcal*\n_(Se refleja en la app automáticamente)_`;
   }
 
-  // ── /completar [comida] — marca comida como completada ───────────────────────
+  // /completar [comida] — marca como completada en Redis
   if (command === "/completar") {
     const search  = args.join(" ").toLowerCase();
     const meals   = DIET[today] || {};
@@ -228,12 +252,12 @@ const processCommand = async (text) => {
     const checked = (await rGet(`${dayKey}:checked`)) || {};
     checked[found] = true;
     await rSet(`${dayKey}:checked`, checked);
-    const total    = Object.keys(meals).length;
-    const done     = Object.keys(checked).length;
+    const total = Object.keys(meals).length;
+    const done  = Object.keys(checked).length;
     return `✅ *${found}* marcada como completada\n\n${done}/${total} comidas completadas hoy 💪`;
   }
 
-  // ── /resumen ─────────────────────────────────────────────────────────────────
+  // /resumen — datos reales de Redis
   if (command === "/resumen") {
     const meals    = DIET[today] || {};
     const planCal  = Object.values(meals).reduce((s, m) => s + m.calories, 0);
@@ -246,17 +270,15 @@ const processCommand = async (text) => {
     const totalCnt = Object.keys(meals).length;
     const waterPct = Math.min(100, Math.round((waterMl / 3000) * 100));
     const waterBar = "█".repeat(Math.floor(waterPct / 10)) + "░".repeat(10 - Math.floor(waterPct / 10));
-
-    return `📊 *Resumen del día — ${today}*\n${"─".repeat(26)}\n\n🍽️ *Comidas:* ${doneCnt}/${totalCnt} completadas\n⚡ *Plan:* ${planCal} kcal${extraCal > 0 ? `\n➕ *Extras:* ${extraCal} kcal\n💯 *Total:* ${planCal + extraCal} kcal` : `\n💯 *Total:* ${planCal} kcal`}\n\n💧 *Agua:*\n${waterBar} ${waterPct}%\n${waterMl} ml de 3.000 ml\n\n${next ? `⏰ *Próxima comida:* ${next.name} a las ${next.schedule}` : "✅ ¡Todas las comidas completadas!"}\n\n${extraCal > 0 ? `📝 *Extras de hoy:*\n${extras.map(e => `  • ${e.foods}${e.calories ? ` (${e.calories} kcal)` : ""}`).join("\n")}` : ""}`;
+    return `📊 *Resumen del día — ${today}*\n${"─".repeat(26)}\n\n🍽️ *Comidas:* ${doneCnt}/${totalCnt} completadas\n⚡ *Plan:* ${planCal} kcal${extraCal > 0 ? `\n➕ *Extras:* ${extraCal} kcal\n💯 *Total:* ${planCal + extraCal} kcal` : `\n💯 *Total:* ${planCal} kcal`}\n\n💧 *Agua:*\n${waterBar} ${waterPct}%\n${waterMl} ml de 3.000 ml\n\n${next ? `⏰ *Próxima:* ${next.name} a las ${next.schedule}` : "✅ ¡Todas las comidas completadas!"}${extras.length > 0 ? `\n\n📝 *Extras:*\n${extras.map(e => `  • ${e.foods}${e.calories ? ` (${e.calories} kcal)` : ""}`).join("\n")}` : ""}`;
   }
 
-  // ── /motivacion ──────────────────────────────────────────────────────────────
+  // /motivacion — Gemini genera frase o pasaje bíblico aleatoriamente
   if (command === "/motivacion" || command === "/motivación") {
-    const msg = await getMotivationalMsg();
-    return msg;
+    return await getMotivationalMsg(today, dayKey);
   }
 
-  // ── /ingredientes [comida] ───────────────────────────────────────────────────
+  // /ingredientes [comida]
   if (command === "/ingredientes") {
     const search = args.join(" ").toLowerCase();
     const meals  = DIET[today] || {};
@@ -268,7 +290,7 @@ const processCommand = async (text) => {
     return `🧾 *Ingredientes — ${name}*\n\n${meal.ingredients.split(",").map(i => `• ${i.trim()}`).join("\n")}\n\n⚡ ${meal.calories} kcal`;
   }
 
-  // ── /stats ───────────────────────────────────────────────────────────────────
+  // /stats
   if (command === "/stats") {
     const weekTotal  = Object.values(DIET).reduce((s, d) => s + Object.values(d).reduce((ss, m) => ss + m.calories, 0), 0);
     const avg        = Math.round(weekTotal / 7);
@@ -276,7 +298,7 @@ const processCommand = async (text) => {
     return `📈 *Estadísticas del plan*\n\n📅 Hoy *(${today})*: *${todayTotal} kcal*\n📊 Media diaria: *${avg} kcal*\n🗓 Total semanal: *${weekTotal} kcal*\n💧 Objetivo agua: *3.000 ml/día*`;
   }
 
-  // ── /recordatorio ────────────────────────────────────────────────────────────
+  // /recordatorio
   if (command === "/recordatorio") {
     const next = getNextMeal(today);
     if (!next) return `🌙 No quedan más comidas hoy. ¡Descansa bien, Joaquín! 😴`;
@@ -287,12 +309,12 @@ const processCommand = async (text) => {
     return `⏰ *Próxima comida en ${minsLeft} minutos*\n\n🍽️ *${next.name}* a las *${next.schedule}*\n${next.foods}\n⚡ ${next.calories} kcal`;
   }
 
-  // ── /consulta ────────────────────────────────────────────────────────────────
+  // /consulta
   if (command === "/consulta") {
     return `🩺 *Consulta con el nutricionista*\n\nRevisa y gestiona tus citas en la pestaña *Nutri* de la app 📱`;
   }
 
-  // ── /peso [kg] ───────────────────────────────────────────────────────────────
+  // /peso [kg]
   if (command === "/peso") {
     const kg = parseFloat(args[0]);
     if (!kg || kg < 30 || kg > 300) return `❌ Peso no válido.\nEjemplo: /peso 78.5`;
@@ -300,9 +322,9 @@ const processCommand = async (text) => {
     return `⚖️ *Peso registrado: ${kg} kg* ✓\n\nAbre la app → pestaña *Nutri* para asignarlo a una consulta 📊`;
   }
 
-  // ── /ayuda ───────────────────────────────────────────────────────────────────
+  // /ayuda
   if (command === "/ayuda" || command === "/help" || command === "/start") {
-    return `🤖 *FitManager Bot*\n${"─".repeat(28)}\n\n*🍽️ Dieta*\n/dieta — Dieta completa de hoy\n/manana — Dieta de mañana\n/semana — Plan de los 7 días\n/comida — Próxima comida ahora\n/ingredientes comida — Ver ingredientes\n/completar comida — Marcar como completada\n\n*📊 Seguimiento*\n/calorias — Calorías de hoy\n/resumen — Resumen completo con agua y extras\n/stats — Estadísticas del plan\n/recordatorio — Tiempo hasta la próxima comida\n\n*💧 Agua (se sincroniza con la app)*\n/agua — Ver estado de hidratación\n/agua+ 500 — Añade 500ml\n/agua+ 250 — Añade 250ml\n/agua0 — Reiniciar agua del día\n\n*➕ Extras (se sincroniza con la app)*\n/extra cafe 80 — Registra un extra con kcal\n\n*🩺 Nutricionista*\n/consulta — Info de tu cita\n/peso 78.5 — Registra tu peso\n\n*💪 Motivación*\n/motivacion — Frase del día\n\n${"─".repeat(28)}\n_Tú Centro de Entrenamiento_`;
+    return `🤖 *FitManager Bot*\n${"─".repeat(28)}\n\n*🍽️ Dieta*\n/dieta — Dieta completa de hoy\n/manana — Dieta de mañana\n/semana — Plan de los 7 días\n/comida — Próxima comida ahora\n/ingredientes comida — Ver ingredientes\n/completar comida — Marcar como completada ✅\n\n*📊 Seguimiento*\n/calorias — Calorías de hoy\n/resumen — Resumen completo del día\n/stats — Estadísticas del plan\n/recordatorio — Tiempo hasta la próxima comida\n\n*💧 Agua (sincronizado con la app)*\n/agua — Ver estado de hidratación\n/agua+ 500 — Añade 500ml\n/agua+ 250 — Añade 250ml\n/agua0 — Reiniciar agua del día\n\n*➕ Extras (sincronizado con la app)*\n/extra cafe 80 — Registra un extra\n\n*🩺 Nutricionista*\n/consulta — Info de tu cita\n/peso 78.5 — Registra tu peso\n\n*💪 Motivación*\n/motivacion — Frase o pasaje bíblico del día\n\n${"─".repeat(28)}\n_Tú Centro de Entrenamiento_`;
   }
 
   // Texto libre
@@ -312,7 +334,7 @@ const processCommand = async (text) => {
       return `👋 *¡Hola, Joaquín!*\n\nHoy es *${today}*.\n${next ? `Tu próxima comida: *${next.name}* a las *${next.schedule}*` : "Ya completaste todas las comidas 🎉"}\n\nEscribe /ayuda para ver todos los comandos.`;
     }
     if (lower.includes("dieta") || lower.includes("comer")) return formatDayDiet(today);
-    if (lower.includes("agua")) return processCommand("/agua");
+    if (lower.includes("agua"))   return processCommand("/agua");
     if (lower.includes("caloria")) return processCommand("/calorias");
     return `👋 Escribe /ayuda para ver todos los comandos disponibles.`;
   }
@@ -320,8 +342,9 @@ const processCommand = async (text) => {
   return `❓ Comando no reconocido: *${command}*\n\nEscribe /ayuda para ver la lista completa.`;
 };
 
-// ── HANDLER PRINCIPAL ─────────────────────────────────────────────────────────
-
+// =============================================================================
+// HANDLER PRINCIPAL DE VERCEL
+// =============================================================================
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).json({ ok: true });
