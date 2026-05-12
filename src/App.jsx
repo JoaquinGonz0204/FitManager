@@ -159,6 +159,20 @@ const dayKey     = (idx) => { const now = new Date(); const diff = idx - jsToMon
 const buildCal   = (y,m) => { const f = new Date(y,m,1); const off = jsToMon(f.getDay()); const days = new Date(y,m+1,0).getDate(); return [...Array(off).fill(null), ...Array.from({length:days},(_,i)=>i+1)]; };
 
 // =============================================================================
+// HELPER DE PERSISTENCIA
+// Lee un valor de localStorage al arrancar y lo guarda cada vez que cambia.
+// Si no existe o hay error, devuelve el valor por defecto.
+// =============================================================================
+const persist = (key, defaultValue) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw !== null ? JSON.parse(raw) : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+};
+
+// =============================================================================
 // COMPONENTE PRINCIPAL
 // =============================================================================
 export default function App() {
@@ -167,7 +181,8 @@ export default function App() {
   const [view, setView] = useState("today");
 
   // ── DIETAS ─────────────────────────────────────────────────────────────────
-  const [diets,       setDiets]       = useState([PRELOADED_DIET]);
+  // Se persiste para conservar ediciones e importaciones entre sesiones
+  const [diets,       setDiets]       = useState(() => persist("fm_diets", [PRELOADED_DIET]));
   const [editingDiet, setEditingDiet] = useState(null);
   const [editDay,     setEditDay]     = useState("Lunes");
   const [editMeal,    setEditMeal]    = useState(null);
@@ -178,20 +193,24 @@ export default function App() {
 
   // ── HOY ────────────────────────────────────────────────────────────────────
   const [todayDayIdx,  setTodayDayIdx]  = useState(jsToMon(new Date().getDay()));
-  const [checkedMeals, setCheckedMeals] = useState({});
+  // Comidas marcadas como completadas — persiste para no perder el progreso del día
+  const [checkedMeals, setCheckedMeals] = useState(() => persist("fm_checked", {}));
   const [expandedMeal, setExpandedMeal] = useState(null);
-  const [dailyLog,     setDailyLog]     = useState({});
+  // Registro diario (extras + overrides) — persiste para conservar cambios del día
+  const [dailyLog,     setDailyLog]     = useState(() => persist("fm_dailylog", {}));
   const [logModal,     setLogModal]     = useState(null);
   const [logForm,      setLogForm]      = useState({ foods:"", calories:"", ingredients:"" });
 
   // ── AGUA ───────────────────────────────────────────────────────────────────
-  const [waterLog,    setWaterLog]    = useState({});
+  // Persiste para conservar el registro de agua aunque se cierre la app
+  const [waterLog,    setWaterLog]    = useState(() => persist("fm_water", {}));
   const [customWater, setCustomWater] = useState("");
 
   // ── NUTRICIONISTA ──────────────────────────────────────────────────────────
-  const [appointments, setAppointments] = useState([
+  // Persiste para conservar citas y pesos registrados
+  const [appointments, setAppointments] = useState(() => persist("fm_appointments", [
     { id:1, datetime:"2026-05-11T10:00", weight:"", notes:"Primera consulta – Plan dietético" }
-  ]);
+  ]));
   const [apptModal,    setApptModal]    = useState(false);
   const [apptForm,     setApptForm]     = useState({ datetime:"", weight:"", notes:"" });
   const [weightModal,  setWeightModal]  = useState(null);
@@ -202,12 +221,11 @@ export default function App() {
   const [calYear,  setCalYear]  = useState(new Date().getFullYear());
 
   // ── NOTIFICACIONES ─────────────────────────────────────────────────────────
-  const [notifEnabled, setNotifEnabled] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("nf_enabled") || "{}"); } catch { return {}; }
-  });
+  const [notifEnabled, setNotifEnabled] = useState(() => persist("nf_enabled", {}));
   const [notifSending,  setNotifSending]  = useState({});
   const [notifLastSent, setNotifLastSent] = useState({});
-  const [tgConnected,   setTgConnected]   = useState(false);
+  // Persiste si el bot estaba conectado para no tener que reconectar cada vez
+  const [tgConnected,   setTgConnected]   = useState(() => persist("fm_tg_connected", false));
   const [tgConnecting,  setTgConnecting]  = useState(false);
   const tickRef = useRef(null);
 
@@ -215,8 +233,118 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
 
-  // ── PERSIST notifEnabled ───────────────────────────────────────────────────
-  useEffect(() => { localStorage.setItem("nf_enabled", JSON.stringify(notifEnabled)); }, [notifEnabled]);
+  // ── EFECTOS DE PERSISTENCIA ────────────────────────────────────────────────
+  // Cada useEffect escucha los cambios de un estado y lo guarda en localStorage
+  useEffect(() => { localStorage.setItem("fm_diets",        JSON.stringify(diets));        }, [diets]);
+  useEffect(() => { localStorage.setItem("fm_checked",      JSON.stringify(checkedMeals)); }, [checkedMeals]);
+  useEffect(() => { localStorage.setItem("fm_dailylog",     JSON.stringify(dailyLog));     }, [dailyLog]);
+  useEffect(() => { localStorage.setItem("fm_water",        JSON.stringify(waterLog));     }, [waterLog]);
+  useEffect(() => { localStorage.setItem("fm_appointments", JSON.stringify(appointments)); }, [appointments]);
+  useEffect(() => { localStorage.setItem("nf_enabled",      JSON.stringify(notifEnabled)); }, [notifEnabled]);
+  useEffect(() => { localStorage.setItem("fm_tg_connected", JSON.stringify(tgConnected));  }, [tgConnected]);
+
+  // ── REDIS SYNC ────────────────────────────────────────────────────────────
+  // Llama a la API del webhook para leer/escribir datos en Redis
+  // Así Telegram y la app comparten los mismos datos en tiempo real
+
+  const redisCall = async (...args) => {
+    try {
+      const res  = await fetch("/api/redis", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(args),
+      });
+      const data = await res.json();
+      return data.result;
+    } catch { return null; }
+  };
+
+  const rGet = async (key) => {
+    const v = await redisCall("GET", key);
+    try { return v ? JSON.parse(v) : null; } catch { return v; }
+  };
+  const rSet = (key, value) => redisCall("SET", key, JSON.stringify(value));
+
+  // Clave del día actual (igual que en webhook.js)
+  const rDayKey = () => {
+    const d = new Date();
+    return `fm:${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+
+  // Al arrancar: sincroniza agua y extras desde Redis
+  useEffect(() => {
+    const syncFromRedis = async () => {
+      try {
+        const dk = rDayKey();
+
+        // Agua — lee de Redis y actualiza waterLog si hay datos más recientes
+        const waterRedis = await rGet(`${dk}:water`);
+        if (waterRedis !== null && waterRedis !== undefined) {
+          setWaterLog(prev => ({ ...prev, [dayKey(todayDayIdx)]: waterRedis }));
+        }
+
+        // Extras — lee de Redis y fusiona con dailyLog
+        const extrasRedis = await rGet(`${dk}:extras`);
+        if (extrasRedis && Array.isArray(extrasRedis) && extrasRedis.length > 0) {
+          setDailyLog(prev => {
+            const dk2    = dayKey(todayDayIdx);
+            const existing = prev[dk2] || { overrides: {}, extras: [] };
+            // Solo actualiza si Redis tiene más extras que localStorage
+            if (extrasRedis.length > existing.extras.length) {
+              return { ...prev, [dk2]: { ...existing, extras: extrasRedis } };
+            }
+            return prev;
+          });
+        }
+
+        // Comidas completadas — lee de Redis y fusiona con checkedMeals
+        const checkedRedis = await rGet(`${dk}:checked`);
+        if (checkedRedis && typeof checkedRedis === "object") {
+          setCheckedMeals(prev => {
+            const dk2    = dayKey(todayDayIdx);
+            const merged = { ...prev };
+            Object.keys(checkedRedis).forEach(meal => {
+              merged[`${dk2}-${meal}`] = true;
+            });
+            return merged;
+          });
+        }
+      } catch (err) {
+        console.log("Redis sync error:", err);
+      }
+    };
+    syncFromRedis();
+  }, []);
+
+  // Cuando cambia la dieta activa → súbela a Redis para que el bot la use
+  useEffect(() => {
+    const activeDiet = diets.find(d => d.active);
+    if (!activeDiet) return;
+    const uploadDiet = async () => {
+      try {
+        await rSet("fm:activeDiet", activeDiet.days);
+      } catch {}
+    };
+    uploadDiet();
+  }, [diets]);
+
+  // Cuando cambia el agua → sincroniza con Redis
+  useEffect(() => {
+    const dk2     = dayKey(todayDayIdx);
+    const waterMl = waterLog[dk2];
+    if (waterMl === undefined) return;
+    const dk3 = rDayKey();
+    rSet(`${dk3}:water`, waterMl);
+  }, [waterLog]);
+
+  // Cuando cambian los extras → sincroniza con Redis
+  useEffect(() => {
+    const dk2    = dayKey(todayDayIdx);
+    const logDay = dailyLog[dk2];
+    if (!logDay?.extras?.length) return;
+    const dk3 = rDayKey();
+    rSet(`${dk3}:extras`, logDay.extras);
+  }, [dailyLog]);
 
   // ── SCHEDULER DE NOTIFICACIONES ────────────────────────────────────────────
   useEffect(() => {
@@ -771,6 +899,42 @@ export default function App() {
                 <div style={{display:"flex",gap:8,padding:"12px 20px 0"}}>
                   <button className="bp" onClick={enableAllN}  style={{...S.qBtn,background:"rgba(200,169,126,0.1)",color:"#c8a97e",border:"1px solid rgba(200,169,126,0.2)",flex:1}}>✅ Activar todas</button>
                   <button className="bp" onClick={disableAllN} style={{...S.qBtn,background:"rgba(255,255,255,0.05)",color:"#666",border:"1px solid rgba(255,255,255,0.07)",flex:1}}>⬜ Desactivar todas</button>
+                </div>
+
+                {/* Botón para registrar comandos en Telegram */}
+                <div style={{padding:"8px 20px 0"}}>
+                  <button className="bp" onClick={async () => {
+                    try {
+                      const res = await fetch(
+                        `https://api.telegram.org/bot${BOT_TOKEN}/setMyCommands`,
+                        {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ commands: [
+                            { command:"dieta",        description:"🍽️ Dieta completa de hoy" },
+                            { command:"manana",       description:"📅 Dieta de mañana" },
+                            { command:"semana",       description:"🗓 Plan de los 7 días" },
+                            { command:"comida",       description:"⏰ Próxima comida ahora" },
+                            { command:"calorias",     description:"📊 Calorías de hoy" },
+                            { command:"agua",         description:"💧 Estado de hidratación" },
+                            { command:"resumen",      description:"📋 Resumen completo del día" },
+                            { command:"completar",    description:"✅ Marcar comida como completada" },
+                            { command:"ingredientes", description:"🧾 Ingredientes de una comida" },
+                            { command:"extra",        description:"➕ Añadir algo extra" },
+                            { command:"peso",         description:"⚖️ Registrar tu peso" },
+                            { command:"stats",        description:"📈 Estadísticas del plan" },
+                            { command:"recordatorio", description:"⏰ Tiempo hasta próxima comida" },
+                            { command:"motivacion",   description:"💪 Frase o pasaje bíblico" },
+                            { command:"ayuda",        description:"🤖 Ver todos los comandos" },
+                          ]})
+                        }
+                      );
+                      const data = await res.json();
+                      showToast(data.ok ? "✅ Comandos registrados en Telegram" : "❌ Error al registrar");
+                    } catch { showToast("❌ Error de conexión"); }
+                  }} style={{width:"100%",background:"rgba(144,144,204,0.1)",color:"#9090cc",border:"1px solid rgba(144,144,204,0.25)",borderRadius:12,padding:"11px",fontFamily:"'DM Sans'",fontSize:13,cursor:"pointer"}}>
+                    ✈️ Registrar comandos en Telegram
+                  </button>
                 </div>
 
                 {NOTIF_GROUPS.map((group,gi) => (
