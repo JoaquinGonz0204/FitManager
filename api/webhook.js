@@ -224,7 +224,7 @@ const processCommand = async (text) => {
 // ── HANDLER PRINCIPAL ─────────────────────────────────────────────────────────
 // Usa module.exports (CommonJS) — requerido por Vercel Serverless Functions
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
 
   // Telegram siempre usa POST — rechaza cualquier otra cosa
   if (req.method !== "POST") {
