@@ -223,26 +223,27 @@ const processCommand = async (text) => {
 
 // ── HANDLER PRINCIPAL ─────────────────────────────────────────────────────────
 // Usa module.exports (CommonJS) — requerido por Vercel Serverless Functions
-
 export default async function handler(req, res) {
 
-  // Telegram siempre usa POST — rechaza cualquier otra cosa
   if (req.method !== "POST") {
     return res.status(200).json({ ok: true });
   }
 
   try {
-    const update  = req.body;
+    // Parsea el body manualmente si Vercel no lo hace automáticamente
+    let update = req.body;
+    if (typeof update === "string") {
+      update = JSON.parse(update);
+    }
+
     const message = update?.message || update?.edited_message;
     if (!message) return res.status(200).json({ ok: true });
 
     const chatId = String(message.chat?.id);
     const text   = message.text || "";
 
-    // Seguridad: solo responde al chat de Joaquín
     if (chatId !== CHAT_ID) return res.status(200).json({ ok: true });
 
-    // Procesa y responde
     const response = await processCommand(text);
     await sendMsg(response);
 
@@ -250,6 +251,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error("Webhook error:", err);
-    return res.status(200).json({ ok: true }); // siempre 200 para Telegram
+    return res.status(200).json({ ok: true });
   }
 }
