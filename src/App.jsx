@@ -159,20 +159,6 @@ const dayKey     = (idx) => { const now = new Date(); const diff = idx - jsToMon
 const buildCal   = (y,m) => { const f = new Date(y,m,1); const off = jsToMon(f.getDay()); const days = new Date(y,m+1,0).getDate(); return [...Array(off).fill(null), ...Array.from({length:days},(_,i)=>i+1)]; };
 
 // =============================================================================
-// HELPER DE PERSISTENCIA
-// Lee un valor de localStorage al arrancar y lo guarda cada vez que cambia.
-// Si no existe o hay error, devuelve el valor por defecto.
-// =============================================================================
-const persist = (key, defaultValue) => {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw !== null ? JSON.parse(raw) : defaultValue;
-  } catch {
-    return defaultValue;
-  }
-};
-
-// =============================================================================
 // COMPONENTE PRINCIPAL
 // =============================================================================
 export default function App() {
@@ -181,8 +167,7 @@ export default function App() {
   const [view, setView] = useState("today");
 
   // ── DIETAS ─────────────────────────────────────────────────────────────────
-  // Se persiste para conservar ediciones e importaciones entre sesiones
-  const [diets,       setDiets]       = useState(() => persist("fm_diets", [PRELOADED_DIET]));
+  const [diets,       setDiets]       = useState([PRELOADED_DIET]);
   const [editingDiet, setEditingDiet] = useState(null);
   const [editDay,     setEditDay]     = useState("Lunes");
   const [editMeal,    setEditMeal]    = useState(null);
@@ -193,24 +178,20 @@ export default function App() {
 
   // ── HOY ────────────────────────────────────────────────────────────────────
   const [todayDayIdx,  setTodayDayIdx]  = useState(jsToMon(new Date().getDay()));
-  // Comidas marcadas como completadas — persiste para no perder el progreso del día
-  const [checkedMeals, setCheckedMeals] = useState(() => persist("fm_checked", {}));
+  const [checkedMeals, setCheckedMeals] = useState({});
   const [expandedMeal, setExpandedMeal] = useState(null);
-  // Registro diario (extras + overrides) — persiste para conservar cambios del día
-  const [dailyLog,     setDailyLog]     = useState(() => persist("fm_dailylog", {}));
+  const [dailyLog,     setDailyLog]     = useState({});
   const [logModal,     setLogModal]     = useState(null);
   const [logForm,      setLogForm]      = useState({ foods:"", calories:"", ingredients:"" });
 
   // ── AGUA ───────────────────────────────────────────────────────────────────
-  // Persiste para conservar el registro de agua aunque se cierre la app
-  const [waterLog,    setWaterLog]    = useState(() => persist("fm_water", {}));
+  const [waterLog,    setWaterLog]    = useState({});
   const [customWater, setCustomWater] = useState("");
 
   // ── NUTRICIONISTA ──────────────────────────────────────────────────────────
-  // Persiste para conservar citas y pesos registrados
-  const [appointments, setAppointments] = useState(() => persist("fm_appointments", [
+  const [appointments, setAppointments] = useState([
     { id:1, datetime:"2026-05-11T10:00", weight:"", notes:"Primera consulta – Plan dietético" }
-  ]));
+  ]);
   const [apptModal,    setApptModal]    = useState(false);
   const [apptForm,     setApptForm]     = useState({ datetime:"", weight:"", notes:"" });
   const [weightModal,  setWeightModal]  = useState(null);
@@ -221,11 +202,12 @@ export default function App() {
   const [calYear,  setCalYear]  = useState(new Date().getFullYear());
 
   // ── NOTIFICACIONES ─────────────────────────────────────────────────────────
-  const [notifEnabled, setNotifEnabled] = useState(() => persist("nf_enabled", {}));
+  const [notifEnabled, setNotifEnabled] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("nf_enabled") || "{}"); } catch { return {}; }
+  });
   const [notifSending,  setNotifSending]  = useState({});
   const [notifLastSent, setNotifLastSent] = useState({});
-  // Persiste si el bot estaba conectado para no tener que reconectar cada vez
-  const [tgConnected,   setTgConnected]   = useState(() => persist("fm_tg_connected", false));
+  const [tgConnected,   setTgConnected]   = useState(false);
   const [tgConnecting,  setTgConnecting]  = useState(false);
   const tickRef = useRef(null);
 
@@ -233,15 +215,8 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
 
-  // ── EFECTOS DE PERSISTENCIA ────────────────────────────────────────────────
-  // Cada useEffect escucha los cambios de un estado y lo guarda en localStorage
-  useEffect(() => { localStorage.setItem("fm_diets",        JSON.stringify(diets));        }, [diets]);
-  useEffect(() => { localStorage.setItem("fm_checked",      JSON.stringify(checkedMeals)); }, [checkedMeals]);
-  useEffect(() => { localStorage.setItem("fm_dailylog",     JSON.stringify(dailyLog));     }, [dailyLog]);
-  useEffect(() => { localStorage.setItem("fm_water",        JSON.stringify(waterLog));     }, [waterLog]);
-  useEffect(() => { localStorage.setItem("fm_appointments", JSON.stringify(appointments)); }, [appointments]);
-  useEffect(() => { localStorage.setItem("nf_enabled",      JSON.stringify(notifEnabled)); }, [notifEnabled]);
-  useEffect(() => { localStorage.setItem("fm_tg_connected", JSON.stringify(tgConnected));  }, [tgConnected]);
+  // ── PERSIST notifEnabled ───────────────────────────────────────────────────
+  useEffect(() => { localStorage.setItem("nf_enabled", JSON.stringify(notifEnabled)); }, [notifEnabled]);
 
   // ── SCHEDULER DE NOTIFICACIONES ────────────────────────────────────────────
   useEffect(() => {
