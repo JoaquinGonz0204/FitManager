@@ -1,48 +1,43 @@
-// api/webhook.js — FitManager Bot para Telegram
-// Vercel Serverless Function (CommonJS)
+// api/webhook.js — FitManager Bot con Redis (Upstash)
+// Sincroniza agua, comidas completadas y extras entre Telegram y la app
 
 const BOT_TOKEN = "8756822686:AAGjXdOfzNq7ROroGXL9my0JnrTnu3-3Jks";
 const CHAT_ID   = "1080470754";
+const REDIS_URL = process.env.REDIS_URL;
 
+// ── REDIS via HTTP (Upstash REST API) ────────────────────────────────────────
+const redis = async (...args) => {
+  const res  = await fetch(REDIS_URL, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(args),
+  });
+  const data = await res.json();
+  return data.result;
+};
+
+const rGet = async (key)         => { const v = await redis("GET", key); try { return v ? JSON.parse(v) : null; } catch { return v; } };
+const rSet = (key, value)        => redis("SET", key, JSON.stringify(value));
+const rDel = (key)               => redis("DEL", key);
+const rIncrBy = (key, amount)    => redis("INCRBY", key, amount);
+
+// Clave del día actual en Redis (ej: "fm:2026-4-13")
+const dk = () => { const d = new Date(); return `fm:${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+
+// ── DATOS DE LA DIETA ─────────────────────────────────────────────────────────
 const DAYS    = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
 const jsToMon = (j) => (j === 0 ? 6 : j - 1);
+const getToday    = () => DAYS[jsToMon(new Date().getDay())];
+const getTomorrow = () => DAYS[(jsToMon(new Date().getDay()) + 1) % 7];
 
 const DIET = {
-  Lunes: {
-    Comida:       { foods:"Filete de ternera a la plancha con tomate natural",  calories:420, schedule:"14:00", ingredients:"Aceite de oliva: 10g, Filete de ternera: 250g, Tomate crudo: 250g" },
-    "Merienda 1": { foods:"Batido de proteína con leche desnatada",             calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" },
-    Cena:         { foods:"Fajitas de pavo con vegetales frescos",              calories:380, schedule:"23:00", ingredients:"Pavo: 150g, Fajita integral: 60g, Lechuga: 30g, Tomate: 40g" },
-  },
-  Martes: {
-    Comida:       { foods:"Hamburguesa de pavo con guisantes",                  calories:390, schedule:"14:00", ingredients:"Hamburguesa pavo: 260g, Guisantes: 125g, Aceite: 8g" },
-    "Merienda 1": { foods:"Batido de proteína con leche desnatada",             calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" },
-    Cena:         { foods:"Parrillada de atún con verduras",                    calories:310, schedule:"23:00", ingredients:"Atún: 150g, Calabacín: 75g, Espárrago: 75g, Pimiento: 75g" },
-  },
-  Miércoles: {
-    Comida:       { foods:"Solomillo de pollo con espinacas y piñones",         calories:480, schedule:"14:00", ingredients:"Pollo: 300g, Espinacas: 150g, Piñones: 15g, Aceite: 10g" },
-    "Merienda 1": { foods:"Batido de proteína con leche desnatada",             calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" },
-    Cena:         { foods:"Ensalada de guisantes con queso fresco y almendras", calories:295, schedule:"23:00", ingredients:"Guisantes: 100g, Queso Burgos 0%: 110g, Almendras: 20g" },
-  },
-  Jueves: {
-    Comida:       { foods:"Salmón a la plancha con pisto",                      calories:520, schedule:"14:00", ingredients:"Salmón: 300g, Pimiento rojo: 100g, Pimiento verde: 100g, Cebolla: 100g" },
-    "Merienda 1": { foods:"Batido de proteína con leche desnatada",             calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" },
-    Cena:         { foods:"Pavo al curry con manzana",                          calories:340, schedule:"23:00", ingredients:"Pavo: 150g, Manzana: 180g, Yogur: 125g, Curry, Comino" },
-  },
-  Viernes: {
-    Comida:       { foods:"Salteado de ternera con ensalada en vinagreta",      calories:380, schedule:"14:00", ingredients:"Ternera: 200g, Tomate: 150g, Cebolleta: 90g, Pepinillos: 20g" },
-    "Merienda 1": { foods:"Batido de proteína con leche desnatada",             calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" },
-    Cena:         { foods:"Kiwi y queso fresco batido",                         calories:190, schedule:"23:00", ingredients:"Queso fresco batido: 240g, Kiwi: 200g" },
-  },
-  Sábado: {
-    Comida:       { foods:"Dorada con tomate, aguacate y nueces",               calories:540, schedule:"14:00", ingredients:"Dorada: 470g, Aguacate: 125g, Tomate: 250g, Nueces: 25g" },
-    "Merienda 1": { foods:"Batido de proteína con leche desnatada",             calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" },
-    Cena:         { foods:"Fajitas de maíz con pollo, lechuga y tomate",        calories:290, schedule:"23:00", ingredients:"Harina maíz: 40g, Clara huevo: 70g, Pollo: 75g" },
-  },
-  Domingo: {
-    Comida:       { foods:"Merluza con salteado de gulas y puerro",             calories:430, schedule:"14:00", ingredients:"Merluza: 350g, Gulas: 100g, Puerro: 75g, Ajo: 10g" },
-    "Merienda 1": { foods:"Batido de proteína con leche desnatada",             calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" },
-    Cena:         { foods:"Ensalada de tomate, cebolla, pimiento verde y atún", calories:280, schedule:"23:00", ingredients:"Tomate: 200g, Cebolla: 125g, Pimiento verde: 125g, Atún: 110g" },
-  },
+  Lunes:     { Comida: { foods:"Filete de ternera a la plancha con tomate natural",  calories:420, schedule:"14:00", ingredients:"Aceite de oliva: 10g, Filete de ternera: 250g, Tomate crudo: 250g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Fajitas de pavo con vegetales frescos", calories:380, schedule:"23:00", ingredients:"Pavo: 150g, Fajita integral: 60g, Lechuga: 30g, Tomate: 40g" } },
+  Martes:    { Comida: { foods:"Hamburguesa de pavo con guisantes",                  calories:390, schedule:"14:00", ingredients:"Hamburguesa pavo: 260g, Guisantes: 125g, Aceite: 8g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Parrillada de atún con verduras", calories:310, schedule:"23:00", ingredients:"Atún: 150g, Calabacín: 75g, Espárrago: 75g, Pimiento: 75g" } },
+  Miércoles: { Comida: { foods:"Solomillo de pollo con espinacas y piñones",         calories:480, schedule:"14:00", ingredients:"Pollo: 300g, Espinacas: 150g, Piñones: 15g, Aceite: 10g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Ensalada de guisantes con queso fresco y almendras", calories:295, schedule:"23:00", ingredients:"Guisantes: 100g, Queso Burgos 0%: 110g, Almendras: 20g" } },
+  Jueves:    { Comida: { foods:"Salmón a la plancha con pisto",                      calories:520, schedule:"14:00", ingredients:"Salmón: 300g, Pimiento rojo: 100g, Pimiento verde: 100g, Cebolla: 100g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Pavo al curry con manzana", calories:340, schedule:"23:00", ingredients:"Pavo: 150g, Manzana: 180g, Yogur: 125g, Curry, Comino" } },
+  Viernes:   { Comida: { foods:"Salteado de ternera con ensalada en vinagreta",      calories:380, schedule:"14:00", ingredients:"Ternera: 200g, Tomate: 150g, Cebolleta: 90g, Pepinillos: 20g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Kiwi y queso fresco batido", calories:190, schedule:"23:00", ingredients:"Queso fresco batido: 240g, Kiwi: 200g" } },
+  Sábado:    { Comida: { foods:"Dorada con tomate, aguacate y nueces",               calories:540, schedule:"14:00", ingredients:"Dorada: 470g, Aguacate: 125g, Tomate: 250g, Nueces: 25g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Fajitas de maíz con pollo, lechuga y tomate", calories:290, schedule:"23:00", ingredients:"Harina maíz: 40g, Clara huevo: 70g, Pollo: 75g" } },
+  Domingo:   { Comida: { foods:"Merluza con salteado de gulas y puerro",             calories:430, schedule:"14:00", ingredients:"Merluza: 350g, Gulas: 100g, Puerro: 75g, Ajo: 10g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Ensalada de tomate, cebolla, pimiento verde y atún", calories:280, schedule:"23:00", ingredients:"Tomate: 200g, Cebolla: 125g, Pimiento verde: 125g, Atún: 110g" } },
 };
 
 const MOTIVATIONAL = [
@@ -56,7 +51,7 @@ const MOTIVATIONAL = [
   "🦁 Disciplina hoy, resultados mañana. ¡Vamos, Joaquín!",
 ];
 
-// ── HELPERS ──────────────────────────────────────────────────────────────────
+// ── HELPERS ───────────────────────────────────────────────────────────────────
 
 const sendMsg = async (text) => {
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -65,9 +60,6 @@ const sendMsg = async (text) => {
     body: JSON.stringify({ chat_id: CHAT_ID, parse_mode: "Markdown", text }),
   });
 };
-
-const getToday    = () => DAYS[jsToMon(new Date().getDay())];
-const getTomorrow = () => DAYS[(jsToMon(new Date().getDay()) + 1) % 7];
 
 const getNextMeal = (day) => {
   const now    = new Date();
@@ -95,18 +87,22 @@ const formatDayDiet = (day) => {
 // ── PROCESADOR DE COMANDOS ────────────────────────────────────────────────────
 
 const processCommand = async (text) => {
-  const raw     = (text || "").trim();
-  const lower   = raw.toLowerCase();
-  const parts   = lower.split(/\s+/);
-  const command = parts[0];
-  const args    = parts.slice(1);
-  const today   = getToday();
+  const raw      = (text || "").trim();
+  const lower    = raw.toLowerCase();
+  const parts    = lower.split(/\s+/);
+  const command  = parts[0];
+  const args     = parts.slice(1);
+  const today    = getToday();
   const tomorrow = getTomorrow();
+  const dayKey   = dk();
 
+  // ── /dieta ──────────────────────────────────────────────────────────────────
   if (command === "/dieta") return formatDayDiet(today);
 
+  // ── /manana ─────────────────────────────────────────────────────────────────
   if (command === "/manana" || command === "/mañana") return formatDayDiet(tomorrow);
 
+  // ── /semana ─────────────────────────────────────────────────────────────────
   if (command === "/semana") {
     let msg = `🗓 *Plan semanal completo*\n${"─".repeat(26)}\n\n`;
     DAYS.forEach(day => {
@@ -119,12 +115,14 @@ const processCommand = async (text) => {
     return msg;
   }
 
+  // ── /comida ─────────────────────────────────────────────────────────────────
   if (command === "/comida") {
     const next = getNextMeal(today);
     if (!next) return `🌙 Ya terminaste todas las comidas de hoy. ¡Buen trabajo, Joaquín! 🎉\n\nMañana: *${Object.values(DIET[tomorrow]||{})[0]?.foods || "ver el plan"}*`;
     return `🍽️ *Próxima comida: ${next.name}*\n\n🕐 A las *${next.schedule}*\n🥗 ${next.foods}\n📝 _${next.ingredients}_\n⚡ ${next.calories} kcal`;
   }
 
+  // ── /calorias ────────────────────────────────────────────────────────────────
   if (command === "/calorias") {
     const meals = DIET[today] || {};
     const total = Object.values(meals).reduce((s, m) => s + m.calories, 0);
@@ -134,46 +132,85 @@ const processCommand = async (text) => {
     return msg;
   }
 
+  // ── /agua (consulta) ─────────────────────────────────────────────────────────
   if (command === "/agua" && args.length === 0) {
-    return `💧 *Registro de agua*\n\nPara añadir agua rápido usa:\n/agua+ 200\n/agua+ 250\n/agua+ 500\n/agua+ 750\n\nObjetivo diario: *3.000 ml* 💦`;
+    const waterMl = (await rGet(`${dayKey}:water`)) || 0;
+    const pct     = Math.round((waterMl / 3000) * 100);
+    const bar     = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
+    return `💧 *Agua de hoy*\n\n${bar} ${pct}%\n*${waterMl} ml* de 3.000 ml\n\nPara añadir:\n/agua+ 200\n/agua+ 250\n/agua+ 500\n/agua+ 750\n\nPara reiniciar: /agua0`;
   }
 
+  // ── /agua+ [ml] — SUMA en Redis y se refleja en la app ───────────────────────
   if (command === "/agua+") {
     const ml = parseInt(args[0]);
     if (!ml || ml <= 0 || ml > 5000) return `❌ Cantidad no válida.\nEjemplo: /agua+ 500`;
-    return `💧 *+${ml}ml anotados* ✓\n\nAbre la app para registrarlo en el total del día 📱`;
+    const current = (await rGet(`${dayKey}:water`)) || 0;
+    const newVal  = current + ml;
+    await rSet(`${dayKey}:water`, newVal);
+    const pct = Math.min(100, Math.round((newVal / 3000) * 100));
+    const bar = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
+    return `💧 *+${ml}ml añadidos* ✓\n\n${bar} ${pct}%\n*${newVal} ml* de 3.000 ml\n\n${newVal >= 3000 ? "🎉 ¡Objetivo de 3L alcanzado!" : `Faltan ${3000 - newVal} ml para el objetivo`}`;
   }
 
+  // ── /agua0 — reinicia el agua del día ───────────────────────────────────────
+  if (command === "/agua0") {
+    await rDel(`${dayKey}:water`);
+    return `💧 Agua del día reiniciada a 0 ml ✓`;
+  }
+
+  // ── /extra [nombre] [kcal] — guarda en Redis ─────────────────────────────────
   if (command === "/extra") {
     if (args.length < 1) return `❌ Formato: /extra nombre kcal\n\nEjemplos:\n• /extra cafe 5\n• /extra platano 105`;
     const kcal    = parseInt(args[args.length - 1]);
     const hasKcal = !isNaN(kcal);
     const name    = hasKcal ? args.slice(0, -1).join(" ") : args.join(" ");
     if (!name) return `❌ Indica qué comiste.\nEjemplo: /extra cafe 80`;
-    return `➕ *Extra anotado* ✓\n\n🍽️ *${name}*${hasKcal ? `\n⚡ ${kcal} kcal` : ""}\n\n_Abre la app para añadirlo al registro del día_`;
+    const extras  = (await rGet(`${dayKey}:extras`)) || [];
+    extras.push({ foods: name, calories: hasKcal ? kcal : 0, ingredients: "" });
+    await rSet(`${dayKey}:extras`, extras);
+    const totalExtra = extras.reduce((s, e) => s + (e.calories || 0), 0);
+    return `➕ *Extra añadido* ✓\n\n🍽️ *${name}*${hasKcal ? `\n⚡ ${kcal} kcal` : ""}\n\n📊 Total extras hoy: *${totalExtra} kcal*\n_(Se refleja en la app automáticamente)_`;
   }
 
-  if (command === "/consulta") {
-    return `🩺 *Consulta con el nutricionista*\n\nRevisa y gestiona tus citas en la pestaña *Nutri* de la app 📱\n\n_Ahí puedes añadir citas, registrar peso y ver la evolución_`;
+  // ── /completar [comida] — marca comida como completada ───────────────────────
+  if (command === "/completar") {
+    const search  = args.join(" ").toLowerCase();
+    const meals   = DIET[today] || {};
+    const found   = Object.keys(meals).find(name =>
+      name.toLowerCase().includes(search) || search.includes(name.toLowerCase().split(" ")[0])
+    );
+    if (!found) return `❌ Comida no encontrada.\n\nComidas de hoy: *${Object.keys(meals).join(", ")}*\n\nEjemplo: /completar comida`;
+    const checked = (await rGet(`${dayKey}:checked`)) || {};
+    checked[found] = true;
+    await rSet(`${dayKey}:checked`, checked);
+    const total    = Object.keys(meals).length;
+    const done     = Object.keys(checked).length;
+    return `✅ *${found}* marcada como completada\n\n${done}/${total} comidas completadas hoy 💪`;
   }
 
-  if (command === "/peso") {
-    const kg = parseFloat(args[0]);
-    if (!kg || kg < 30 || kg > 300) return `❌ Peso no válido.\nEjemplo: /peso 78.5`;
-    return `⚖️ *Peso anotado: ${kg} kg* ✓\n\nAbre la app → pestaña *Nutri* para asignarlo a una consulta 📊`;
-  }
-
+  // ── /resumen ─────────────────────────────────────────────────────────────────
   if (command === "/resumen") {
-    const meals = DIET[today] || {};
-    const total = Object.values(meals).reduce((s, m) => s + m.calories, 0);
-    const next  = getNextMeal(today);
-    return `📊 *Resumen del día — ${today}*\n${"─".repeat(26)}\n\n🍽️ *Comidas del plan:*\n${Object.entries(meals).map(([n,m]) => `  • ${m.schedule} ${n} (${m.calories} kcal)`).join("\n")}\n\n💯 *Total: ${total} kcal*\n\n${next ? `⏰ *Próxima:* ${next.name} a las ${next.schedule}` : "✅ Todas las comidas completadas"}\n\n💧 Recuerda los *3 litros de agua* 💪`;
+    const meals    = DIET[today] || {};
+    const planCal  = Object.values(meals).reduce((s, m) => s + m.calories, 0);
+    const next     = getNextMeal(today);
+    const waterMl  = (await rGet(`${dayKey}:water`)) || 0;
+    const extras   = (await rGet(`${dayKey}:extras`)) || [];
+    const extraCal = extras.reduce((s, e) => s + (e.calories || 0), 0);
+    const checked  = (await rGet(`${dayKey}:checked`)) || {};
+    const doneCnt  = Object.keys(checked).length;
+    const totalCnt = Object.keys(meals).length;
+    const waterPct = Math.min(100, Math.round((waterMl / 3000) * 100));
+    const waterBar = "█".repeat(Math.floor(waterPct / 10)) + "░".repeat(10 - Math.floor(waterPct / 10));
+
+    return `📊 *Resumen del día — ${today}*\n${"─".repeat(26)}\n\n🍽️ *Comidas:* ${doneCnt}/${totalCnt} completadas\n⚡ *Plan:* ${planCal} kcal${extraCal > 0 ? `\n➕ *Extras:* ${extraCal} kcal\n💯 *Total:* ${planCal + extraCal} kcal` : `\n💯 *Total:* ${planCal} kcal`}\n\n💧 *Agua:*\n${waterBar} ${waterPct}%\n${waterMl} ml de 3.000 ml\n\n${next ? `⏰ *Próxima comida:* ${next.name} a las ${next.schedule}` : "✅ ¡Todas las comidas completadas!"}\n\n${extraCal > 0 ? `📝 *Extras de hoy:*\n${extras.map(e => `  • ${e.foods}${e.calories ? ` (${e.calories} kcal)` : ""}`).join("\n")}` : ""}`;
   }
 
+  // ── /motivacion ──────────────────────────────────────────────────────────────
   if (command === "/motivacion" || command === "/motivación") {
     return MOTIVATIONAL[Math.floor(Math.random() * MOTIVATIONAL.length)];
   }
 
+  // ── /ingredientes [comida] ───────────────────────────────────────────────────
   if (command === "/ingredientes") {
     const search = args.join(" ").toLowerCase();
     const meals  = DIET[today] || {};
@@ -185,6 +222,7 @@ const processCommand = async (text) => {
     return `🧾 *Ingredientes — ${name}*\n\n${meal.ingredients.split(",").map(i => `• ${i.trim()}`).join("\n")}\n\n⚡ ${meal.calories} kcal`;
   }
 
+  // ── /stats ───────────────────────────────────────────────────────────────────
   if (command === "/stats") {
     const weekTotal  = Object.values(DIET).reduce((s, d) => s + Object.values(d).reduce((ss, m) => ss + m.calories, 0), 0);
     const avg        = Math.round(weekTotal / 7);
@@ -192,6 +230,7 @@ const processCommand = async (text) => {
     return `📈 *Estadísticas del plan*\n\n📅 Hoy *(${today})*: *${todayTotal} kcal*\n📊 Media diaria: *${avg} kcal*\n🗓 Total semanal: *${weekTotal} kcal*\n💧 Objetivo agua: *3.000 ml/día*`;
   }
 
+  // ── /recordatorio ────────────────────────────────────────────────────────────
   if (command === "/recordatorio") {
     const next = getNextMeal(today);
     if (!next) return `🌙 No quedan más comidas hoy. ¡Descansa bien, Joaquín! 😴`;
@@ -202,19 +241,33 @@ const processCommand = async (text) => {
     return `⏰ *Próxima comida en ${minsLeft} minutos*\n\n🍽️ *${next.name}* a las *${next.schedule}*\n${next.foods}\n⚡ ${next.calories} kcal`;
   }
 
-  if (command === "/ayuda" || command === "/help" || command === "/start") {
-    return `🤖 *FitManager Bot*\n${"─".repeat(28)}\n\n*🍽️ Dieta*\n/dieta — Dieta completa de hoy\n/manana — Dieta de mañana\n/semana — Plan de los 7 días\n/comida — Próxima comida ahora\n/ingredientes comida — Ver ingredientes\n\n*📊 Seguimiento*\n/calorias — Calorías de hoy\n/resumen — Resumen completo\n/stats — Estadísticas del plan\n/recordatorio — Tiempo hasta la próxima comida\n\n*💧 Agua*\n/agua — Info hidratación\n/agua+ 500 — Añade 500ml\n\n*➕ Extras*\n/extra cafe 80 — Registra un extra\n\n*🩺 Nutricionista*\n/consulta — Info de tu cita\n/peso 78.5 — Registra tu peso\n\n*💪 Motivación*\n/motivacion — Frase del día\n\n${"─".repeat(28)}\n_Tú Centro de Entrenamiento_`;
+  // ── /consulta ────────────────────────────────────────────────────────────────
+  if (command === "/consulta") {
+    return `🩺 *Consulta con el nutricionista*\n\nRevisa y gestiona tus citas en la pestaña *Nutri* de la app 📱`;
   }
 
-  // Texto libre — detecta palabras clave
+  // ── /peso [kg] ───────────────────────────────────────────────────────────────
+  if (command === "/peso") {
+    const kg = parseFloat(args[0]);
+    if (!kg || kg < 30 || kg > 300) return `❌ Peso no válido.\nEjemplo: /peso 78.5`;
+    await rSet("fm:lastWeight", { kg, date: new Date().toISOString() });
+    return `⚖️ *Peso registrado: ${kg} kg* ✓\n\nAbre la app → pestaña *Nutri* para asignarlo a una consulta 📊`;
+  }
+
+  // ── /ayuda ───────────────────────────────────────────────────────────────────
+  if (command === "/ayuda" || command === "/help" || command === "/start") {
+    return `🤖 *FitManager Bot*\n${"─".repeat(28)}\n\n*🍽️ Dieta*\n/dieta — Dieta completa de hoy\n/manana — Dieta de mañana\n/semana — Plan de los 7 días\n/comida — Próxima comida ahora\n/ingredientes comida — Ver ingredientes\n/completar comida — Marcar como completada\n\n*📊 Seguimiento*\n/calorias — Calorías de hoy\n/resumen — Resumen completo con agua y extras\n/stats — Estadísticas del plan\n/recordatorio — Tiempo hasta la próxima comida\n\n*💧 Agua (se sincroniza con la app)*\n/agua — Ver estado de hidratación\n/agua+ 500 — Añade 500ml\n/agua+ 250 — Añade 250ml\n/agua0 — Reiniciar agua del día\n\n*➕ Extras (se sincroniza con la app)*\n/extra cafe 80 — Registra un extra con kcal\n\n*🩺 Nutricionista*\n/consulta — Info de tu cita\n/peso 78.5 — Registra tu peso\n\n*💪 Motivación*\n/motivacion — Frase del día\n\n${"─".repeat(28)}\n_Tú Centro de Entrenamiento_`;
+  }
+
+  // Texto libre
   if (!raw.startsWith("/")) {
     if (lower.includes("hola") || lower.includes("buenas")) {
       const next = getNextMeal(today);
       return `👋 *¡Hola, Joaquín!*\n\nHoy es *${today}*.\n${next ? `Tu próxima comida: *${next.name}* a las *${next.schedule}*` : "Ya completaste todas las comidas 🎉"}\n\nEscribe /ayuda para ver todos los comandos.`;
     }
     if (lower.includes("dieta") || lower.includes("comer")) return formatDayDiet(today);
-    if (lower.includes("agua"))     return `💧 Objetivo: *3.000 ml/día*\nUsa /agua+ 500 para añadir agua rápido`;
-    if (lower.includes("caloria"))  return processCommand("/calorias");
+    if (lower.includes("agua")) return processCommand("/agua");
+    if (lower.includes("caloria")) return processCommand("/calorias");
     return `👋 Escribe /ayuda para ver todos los comandos disponibles.`;
   }
 
@@ -222,19 +275,15 @@ const processCommand = async (text) => {
 };
 
 // ── HANDLER PRINCIPAL ─────────────────────────────────────────────────────────
-// Usa module.exports (CommonJS) — requerido por Vercel Serverless Functions
-export default async function handler(req, res) {
 
+export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).json({ ok: true });
   }
 
   try {
-    // Parsea el body manualmente si Vercel no lo hace automáticamente
     let update = req.body;
-    if (typeof update === "string") {
-      update = JSON.parse(update);
-    }
+    if (typeof update === "string") update = JSON.parse(update);
 
     const message = update?.message || update?.edited_message;
     if (!message) return res.status(200).json({ ok: true });
