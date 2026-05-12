@@ -40,16 +40,61 @@ const DIET = {
   Domingo:   { Comida: { foods:"Merluza con salteado de gulas y puerro",             calories:430, schedule:"14:00", ingredients:"Merluza: 350g, Gulas: 100g, Puerro: 75g, Ajo: 10g" }, "Merienda 1": { foods:"Batido de proteína con leche desnatada", calories:230, schedule:"19:00", ingredients:"Proteína suero 90%: 30g, Leche desnatada: 400g" }, Cena: { foods:"Ensalada de tomate, cebolla, pimiento verde y atún", calories:280, schedule:"23:00", ingredients:"Tomate: 200g, Cebolla: 125g, Pimiento verde: 125g, Atún: 110g" } },
 };
 
-const MOTIVATIONAL = [
-  "💪 Cada comida saludable es un paso hacia tu mejor versión. ¡Tú puedes!",
-  "🌟 La consistencia es más poderosa que la perfección. ¡Sigue el plan!",
-  "🔥 Los resultados no se ven de un día para otro, pero se construyen cada día.",
-  "🎯 Hoy es otro día para acercarte a tu objetivo. ¡Aprovéchalo!",
-  "⚡ Tu cuerpo te lo agradecerá. Un día bien alimentado = energía real.",
-  "🏆 No se trata de ser perfecto, se trata de ser constante. ¡Eso lo haces tú!",
-  "🌈 Cada elección saludable suma. Hoy también cuenta.",
-  "🦁 Disciplina hoy, resultados mañana. ¡Vamos, Joaquín!",
-];
+// Genera una frase motivacional personalizada usando Claude AI
+const getMotivationalMsg = async () => {
+  try {
+    const today   = getToday();
+    const meals   = DIET[today] || {};
+    const dayKey  = dk();
+    const waterMl = (await rGet(`${dayKey}:water`)) || 0;
+    const checked = (await rGet(`${dayKey}:checked`)) || {};
+    const doneCnt = Object.keys(checked).length;
+    const totalCnt = Object.keys(meals).length;
+
+    const context = `Hoy es ${today}. Joaquín lleva ${waterMl}ml de agua bebidos (objetivo 3000ml) y ha completado ${doneCnt} de ${totalCnt} comidas del plan dietético. Su objetivo es reducir grasa corporal.`;
+
+    const tipo = Math.random() > 0.5 ? "motivacional" : "bíblico";
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 200,
+        messages: [{
+          role: "user",
+          content: tipo === "bíblico"
+            ? `Eres un coach de nutrición cristiano. Contexto de Joaquín hoy: ${context}.
+
+Elige UN pasaje bíblico real y exacto que conecte con su situación (salud, perseverancia, cuerpo como templo, fuerza, esperanza). 
+
+Formato de respuesta:
+📖 [Versículo completo en español]
+— [Libro Capítulo:Versículo]
+
+Luego añade UNA frase corta conectando el pasaje con su objetivo de salud hoy.
+Máximo 3 líneas. Solo devuelve el mensaje, sin explicaciones.`
+
+            : `Eres un coach de nutrición motivador. Contexto de Joaquín hoy: ${context}.
+
+Genera UNA frase motivacional corta, específica a su situación actual (agua bebida, comidas completadas, objetivo de reducir grasa). 
+No uses frases genéricas. Que sea directa, enérgica y personal.
+Con 1 emoji al inicio. Máximo 2 frases.
+Solo devuelve la frase, sin explicaciones ni comillas.`,
+        }],
+      }),
+    });
+
+    const data = await res.json();
+    return data.content?.[0]?.text || "💪 Todo lo puedo en Cristo que me fortalece. — Filipenses 4:13";
+  } catch {
+    return "📖 «El Señor es mi fortaleza y mi escudo.» — Salmos 28:7\nHoy cuida tu cuerpo como el templo que es. ¡Tú puedes, Joaquín!";
+  }
+};
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
@@ -207,7 +252,8 @@ const processCommand = async (text) => {
 
   // ── /motivacion ──────────────────────────────────────────────────────────────
   if (command === "/motivacion" || command === "/motivación") {
-    return MOTIVATIONAL[Math.floor(Math.random() * MOTIVATIONAL.length)];
+    const msg = await getMotivationalMsg();
+    return msg;
   }
 
   // ── /ingredientes [comida] ───────────────────────────────────────────────────
