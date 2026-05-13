@@ -254,8 +254,9 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify(args),
       });
+      if (!res.ok) return null;
       const data = await res.json();
-      return data.result;
+      return data.result ?? null;
     } catch { return null; }
   };
 
