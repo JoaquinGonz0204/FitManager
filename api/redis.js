@@ -1,23 +1,29 @@
 // api/redis.js — Proxy Redis para la app React
-// La app no puede llamar a Redis directamente (CORS), así que lo hace a través de este endpoint
+// Usa Upstash REST API (HTTP) en lugar de protocolo Redis nativo
 
-const REDIS_URL = process.env.REDIS_URL;
+const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 export default async function handler(req, res) {
-  // Solo acepta POST
-  if (req.method !== "POST") {
-    return res.status(200).json({ result: null });
-  }
+  // Permite CORS para que la app React pueda llamarlo
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST")    return res.status(200).json({ result: null });
 
   try {
     let args = req.body;
     if (typeof args === "string") args = JSON.parse(args);
 
-    // Llama a Redis via Upstash REST API
-    const response = await fetch(REDIS_URL, {
+    const response = await fetch(UPSTASH_URL, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(args),
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${UPSTASH_TOKEN}`,
+      },
+      body: JSON.stringify(args),
     });
 
     const data = await response.json();
