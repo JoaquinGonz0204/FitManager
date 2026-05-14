@@ -140,6 +140,17 @@ export default async function handler(req, res) {
     // ── MENSAJE 3: Recordatorio de agua ────────────────────────────────────
     await sendMsg(`💧 *¡Empieza el día hidratado!*\n\nBébete un buen vaso de agua ahora 🥤\n\nObjetivo de hoy: *3.000 ml*\n\nUsa /agua+ 250 cada vez que bebas para llevar el control 📊`);
 
+    // ── MENSAJE 4: Recordatorio de peso (solo los domingos) ─────────────────
+    const dayOfWeek = new Date().toLocaleString("es-ES", { timeZone: "Europe/Madrid", weekday: "long" });
+    if (dayOfWeek.toLowerCase() === "domingo") {
+      await new Promise(r => setTimeout(r, 1000));
+      const lastWeight = await rGet("fm:lastWeight");
+      const lastWeightMsg = lastWeight
+        ? `\n\nÚltimo peso registrado: *${lastWeight.kg} kg*`
+        : "";
+      await sendMsg(`⚖️ *¡Es domingo, Joaquín!*\n\nEs el momento de pesarte en ayunas 📊${lastWeightMsg}\n\nRegistra tu peso con:\n/peso 78.5\n\n_Pésate siempre a la misma hora y en las mismas condiciones para que los datos sean comparables_ 💪`);
+    }
+
     return res.status(200).json({ ok: true, message: "Notificaciones enviadas" });
 
   } catch (err) {
