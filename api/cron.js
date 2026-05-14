@@ -101,8 +101,19 @@ const getFallback = (tipo) => {
 
 // ── HANDLER PRINCIPAL ─────────────────────────────────────────────────────────
 export default async function handler(req, res) {
-  // Vercel llama a este endpoint automáticamente según el cron schedule
-  // También puedes llamarlo manualmente abriendo /api/cron en el navegador
+  // Comprueba si son las 7:00 en España — funciona en verano e invierno automáticamente
+  // Para probar manualmente abre /api/cron?force=true
+  const isManual = req.url?.includes('force=true');
+
+  if (!isManual) {
+    const now  = new Date();
+    const hour = parseInt(
+      now.toLocaleString('es-ES', { timeZone: 'Europe/Madrid', hour: 'numeric', hour12: false })
+    );
+    if (hour !== 7) {
+      return res.status(200).json({ ok: true, message: `Son las ${hour}h en España. Solo se envía a las 7h.` });
+    }
+  }
 
   try {
     const today = getToday();
